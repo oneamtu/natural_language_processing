@@ -1,0 +1,19 @@
+1.a. NYNY
+b.  (ATB)TC = BTAC
+2.0.4, 0.5, nope (-0.175 cov)
+4.0.1, 0..0.2
+5. lg2n; -  H(Y) -  H(X)
+
+irb(main):007:0> txt.split(" ").group_by { _1 }.map { [_1, _2.count] }.sort_by { _2 }.reverse.take(10)
+=> [["the", 26423], ["of", 13072], ["to", 11264], ["a", 10447], ["and", 9533], ["in", 8677], ["that", 5778], ["for", 4089], ["is", 3664], ["Mr.", 3349]]
+
+[[",", 28599], [".", 26620], ["the", 26461], ["of", 13112], ["to", 11321], ["a", 10469], ["and", 9629], ["in", 8784], ["-", 6766], ["that", 5928]]
+[[",", 28599], [".", 26620], ["the", 26461], ["of", 13112], ["to", 11321], ["a", 10469], ["and", 9629], ["in", 8784], ["-", 6766], ["that", 5928], ["'s", 4355], ["for", 4129], ["''", 4052]]
+"]'"]]
+Punctuation
+
+Punctuation is not semantically tied to a word, but some words may be more commonly punctuated, so it changes the "level" of the
+punctuation in a sentence - syntactically separate or melded with words.
+
+Separating contractions also affects the granularity of input similarly (shouldn't vs. should + n't) - so it change whether
+we "glob" words together for processing i.e. is shouldn't = should + n't or just its own word, meaning the negative of should.
