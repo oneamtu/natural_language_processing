@@ -27,15 +27,30 @@ class FeatureExtractor(object):
     def get_indexer(self):
         raise Exception("Don't call me, call my subclasses")
 
-    def preprocess_sentence(self, sentence):
+    def preprocess_sentence(self, sentence, negative_tags=True):
         preprocessed_sentence = []
+
+        # negative tags - marginally helpful?
+        negating = False
 
         for word in sentence:
             # lowercasing makes a slight difference
             word = word.lower()
+
+            if word in PUNCTUATION:
+                negating = False
+
             if word in TOP_STOPWORDS or word in PUNCTUATION:
                 continue
-            preprocessed_sentence.append(word)
+
+            if negative_tags and negating:
+                preprocessed_sentence.append("NOT_" + word)
+            else:
+                preprocessed_sentence.append(word)
+
+            # add negative tags for the rest of the sentence
+            if word in ["n't", "not"]:
+                negating = True
 
         return preprocessed_sentence
 
@@ -118,28 +133,11 @@ class BetterFeatureExtractor(FeatureExtractor):
         @see FeatureExtractor#extract_features
         """
         counter = Counter()
-        negated_sentence = []
 
-        negating = False
+        preprocessed_sentence = self.preprocess_sentence(sentence)
 
-        # negative tags - marginally helpful?
-        for gram in sentence:
-            if gram in PUNCTUATION:
-                negating = False
-
-            # add negative tags for the rest of the sentence
-            if negating:
-                negated_sentence.append("NOT_" + gram)
-            else:
-                negated_sentence.append(gram)
-
-            if gram in ["n't", "not"]:
-                negating = True
-
-        #  preprocessed_sentence = self.preprocess_sentence(sentence)
-        preprocessed_sentence = self.preprocess_sentence(negated_sentence)
-
-        # + TRIGRAMS
+        # UNIGRAM + BIGRAM + tf_idf scoring & clipping
+        # TRIGRAM & QUADGRAM did not help (neither did skipgrams)
         for num_grams in range(1, 3):
             for i in range(len(preprocessed_sentence)-num_grams):
                 words = preprocessed_sentence[slice(i, i+num_grams)]
