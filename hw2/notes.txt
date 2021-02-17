@@ -1,0 +1,7 @@
+=====Results=====
+{
+  "dev_acc": 0.7362385321100917,
+    "dev_f1": 0.7325581395348837,
+      "execution_time": 158.44148874282837,
+        "output": "Accuracy: 642 / 872 = 0.736239;\nPrecision (fraction of predicted positives that are correct): 315 / 416 = 0.757212;\nRecall (fraction of true positives predicted correctly): 315 / 444 = 0.709459;\nF1 (harmonic mean of precision and recall): 0.732558;\n"
+        }
