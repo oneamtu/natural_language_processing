@@ -76,7 +76,7 @@ class NeuralSentimentClassifier(SentimentClassifier):
         """
         log_probs = self.ffnn.forward(self.preprocess_input([ex_words]))
         # from IPython import embed; embed()
-        return torch.argmax(log_probs)
+        return torch.argmax(log_probs, dim=1)
 
     def predict_all(self, all_ex_words: List[List[str]]) -> List[int]:
         """
@@ -93,17 +93,11 @@ class NeuralSentimentClassifier(SentimentClassifier):
         returns training loss
         """
         x = self.preprocess_input(exs_words)
-        # Build one-hot representation of y. Instead of the label 0 or 1, label_onehot is either [0, 1] or [1, 0]. This
-        # way we can take the dot product directly with a probability vector to get class probabilities.
-        label_onehot = torch.zeros(len(labels), OUTPUT_SIZE)
-        indexes = torch.from_numpy(np.array(labels, dtype=np.int64).reshape(len(labels), 1))
-        # scatter will write the value of 1 into the position of label_onehot given by y
-        label_onehot.scatter_(1, indexes, 1)
         # Zero out the gradients from the torch.from_numpy(np.array(labels, dtype=np.int64))FFNN object. *THIS IS VERY IMPORTANT TO DO BEFORE CALLING BACKWARD()*
         self.ffnn.zero_grad()
         log_probs = self.ffnn.forward(x)
-        # Can also use built-in NLLLoss as a shortcut here but we're being explicit here
-        loss = torch.tensordot(torch.neg(log_probs), label_onehot)
+        # from IPython import embed; embed()
+        loss = nn.NLLLoss()(log_probs, torch.tensor(labels))
         # Computes the gradient and takes the optimizer step
         loss.backward()
         self.optimizer.step()
@@ -131,6 +125,7 @@ class SentimentNN(nn.Module):
         :param out: size of output (integer), which should be the number of classes
         """
         super(SentimentNN, self).__init__()
+        # self.dropout = nn.Dropout(p=0.1, inplace=True)
         self.embedding = nn.Embedding.from_pretrained(
                 torch.from_numpy(embeddings.vectors).float(), freeze=True, padding_idx=0)
         self.V = nn.Linear(inp, hid)
@@ -138,7 +133,6 @@ class SentimentNN(nn.Module):
         self.g = nn.ReLU()
         # TODO: multiple?
         self.W = nn.Linear(hid, out)
-        self.log_softmax = nn.LogSoftmax(dim=1)
         # Initialize weights according to a formula due to Xavier Glorot.
         nn.init.xavier_uniform_(self.V.weight)
         nn.init.xavier_uniform_(self.W.weight)
@@ -151,11 +145,10 @@ class SentimentNN(nn.Module):
         :return: an [out]-sized tensor of log probabilities. (In general your network can be set up to return either log
         probabilities or a tuple of (loss, log probability) if you want to pass in y to this function as well
         """
+        # embedded = torch.mean(self.dropout(self.embedding(x)), 1)
         embedded = torch.mean(self.embedding(x), 1)
         # from IPython import embed; embed()
-        return self.log_softmax(self.W(self.g(self.V(embedded))))
-
-DROPOUT_RATE = 0.0
+        return nn.LogSoftmax(dim=1)(self.W(self.g(self.V(embedded))))
 
 def train_deep_averaging_network(args, train_exs: List[SentimentExample], dev_exs: List[SentimentExample], word_embeddings: WordEmbeddings) -> NeuralSentimentClassifier:
     """
@@ -186,15 +179,15 @@ def train_deep_averaging_network(args, train_exs: List[SentimentExample], dev_ex
         evaluate = True
 
         # Evaluate on the dev set
-        if evaluate and epoch % 5 == 0:
+        if evaluate and epoch % 2 == 0:
             num_correct = 0
             num_total = 0
+            predictions = classifier.predict_all([ex.words for ex in dev_exs])
             for idx in range(0, len(dev_exs)):
-                prediction = classifier.predict(dev_exs[idx].words)
-                if dev_exs[idx].label == prediction:
+                if dev_exs[idx].label == predictions[idx]:
                     num_correct += 1
                 num_total += 1
-            from IPython import embed; embed()
+            # from IPython import embed; embed()
             acc = float(num_correct) / num_total
             print("Epoch %i dev - Accuracy: %i / %i = %f" % (epoch, num_correct, num_total, acc))
             pickle.dump(classifier, open("classifier.pickle", "wb"))
@@ -210,6 +203,6 @@ if __name__=="__main__":
     print(f"Prediction is: {prediction}")
 
     log_probs = classifier.ffnn.forward(classifier.preprocess_input([sentence]))
-    from IPython import embed; embed()
+    # from IPython import embed; embed()
     assert(torch.exp(log_probs).sum() == 1.)
     print(f"Probs are: {torch.exp(log_probs)}")
