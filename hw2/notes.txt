@@ -5,3 +5,12 @@
       "execution_time": 158.44148874282837,
         "output": "Accuracy: 642 / 872 = 0.736239;\nPrecision (fraction of predicted positives that are correct): 315 / 416 = 0.757212;\nRecall (fraction of true positives predicted correctly): 315 / 444 = 0.709459;\nF1 (harmonic mean of precision and recall): 0.732558;\n"
         }
+
+python neural_sentiment_classifier.py --word_vecs_path data/glove.6B.300d-relativized.txt --num_epochs=20 --batch_size=50
+
+=====Results=====
+{
+  "dev_acc": 0.801605504587156,
+    "dev_f1": 0.8121606948968512,
+      "execution_time": 48.47962474822998,
+      }

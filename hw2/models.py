@@ -44,14 +44,16 @@ class TrivialSentimentClassifier(SentimentClassifier):
 
 
 OUTPUT_SIZE = 2
+DROPOUT_RATE = 0.2
 
 class NeuralSentimentClassifier(SentimentClassifier):
 
-    def __init__(self, embeddings, lr):
+    def __init__(self, embeddings, lr, dropout_rate = DROPOUT_RATE):
         self.embeddings = embeddings
         input_size = embeddings.get_embedding_length()
         self.ffnn = SentimentNN(input_size, input_size, OUTPUT_SIZE, embeddings)
         self.optimizer = optim.Adam(self.ffnn.parameters(), lr=lr)
+        self.dropout_rate = dropout_rate
 
     def preprocess_input(self, sentences: List[List[str]]) -> torch.Tensor:
         """
@@ -63,7 +65,12 @@ class NeuralSentimentClassifier(SentimentClassifier):
 
         indexed_sentences = []
         for sentence in sentences:
-            idxs = [idx(word) for word in sentence]
+            if self.ffnn.training:
+                probs = np.random.rand(len(sentence))
+            else:
+                probs = np.ones(len(sentence))
+
+            idxs = [idx(word) if probs[i] > self.dropout_rate else pad_idx for i, word in enumerate(sentence)]
             idxs = [i if i != -1 else idx("UNK") for i in idxs]
             idxs += [pad_idx] * (length - len(sentence))
             indexed_sentences.append(torch.tensor(idxs))
@@ -161,6 +168,8 @@ def train_deep_averaging_network(args, train_exs: List[SentimentExample], dev_ex
     classifier = NeuralSentimentClassifier(word_embeddings, lr=args.lr)
 
     for epoch in range(0, args.num_epochs):
+        classifier.ffnn.train()
+
         ex_indices = [i for i in range(0, len(train_exs))]
         random.shuffle(ex_indices)
         total_loss = 0.0
@@ -169,13 +178,14 @@ def train_deep_averaging_network(args, train_exs: List[SentimentExample], dev_ex
             if range_end == range_start:
                 continue
 
-            sliced_train_exs = train_exs[range_start:range_end]
+            sliced_train_exs = [train_exs[i] for i in ex_indices[range_start:range_end]]
             words = [ex.words for ex in sliced_train_exs]
             labels = [ex.label for ex in sliced_train_exs]
             loss = classifier.train(words, labels)
             total_loss += loss
         print("Total loss on epoch %i: %f" % (epoch, total_loss))
 
+        classifier.ffnn.eval()
         evaluate = True
 
         # Evaluate on the dev set
