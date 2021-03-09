@@ -57,7 +57,8 @@ class ViterbiModel(object):
         bio_tags_i = np.zeros(len(sentence_tokens), dtype=np.int64)
 
         for tag_i in range(len(self.tag_indexer)):
-            V[0][tag_i] = self.scorer.score_init(sentence_tokens, tag_i)
+            V[0][tag_i] = self.scorer.score_init(sentence_tokens, tag_i) + \
+                self.scorer.score_emission(sentence_tokens, tag_i, 0)
 
         for token_i in range(1, len(sentence_tokens)):
             for tag_i in range(len(self.tag_indexer)):
@@ -66,15 +67,14 @@ class ViterbiModel(object):
 
                 for prev_tag_i in range(len(self.tag_indexer)):
                     score = V[token_i-1][prev_tag_i] + \
-                        self.scorer.score_transition(sentence_tokens, prev_tag_i, tag_i) + \
-                        self.scorer.score_emission(sentence_tokens, tag_i, token_i)
+                        self.scorer.score_transition(sentence_tokens, prev_tag_i, tag_i)
                     if score >= best_score:
                         best_score = score
                         best_prev_tag_i = prev_tag_i
 
-                V[token_i][tag_i] = best_score
+                V[token_i][tag_i] = best_score + self.scorer.score_emission(sentence_tokens, tag_i, token_i)
                 B[token_i][tag_i] = best_prev_tag_i
-            import ipdb; ipdb.set_trace()
+            # import ipdb; ipdb.set_trace()
 
         bio_tags_i[-1] = np.argmax(V[-1])
 
