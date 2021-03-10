@@ -191,10 +191,11 @@ class FeatureBasedSequenceScorer(object):
     Feature-based sequence scoring model. Note that this scorer is instantiated *for every example*: it contains
     the feature cache used for that example.
     """
-    def __init__(self, tag_indexer, feature_weights, feat_cache):
+    def __init__(self, tag_indexer, feature_weights, feat_cache, feature_indexer):
         self.tag_indexer = tag_indexer
         self.feature_weights = feature_weights
         self.feat_cache = feat_cache
+        self.feature_indexer = feature_indexer
 
     def score_init(self, sentence, tag_idx):
         if isI(self.tag_indexer.get_object(tag_idx)):
@@ -213,23 +214,20 @@ class FeatureBasedSequenceScorer(object):
             return 0
 
     def score_emission(self, sentence_tokens, tag_idx, word_posn):
-        feats = self.feat_cache[word_posn][tag_idx]
+        if self.feat_cache is not None:
+            feats = self.feat_cache[word_posn][tag_idx]
+        else:
+            feats = extract_emission_features(sentence_tokens, word_posn, self.tag_indexer.get_object(tag_idx), self.feature_indexer, add_to_indexer=False)
+
         return self.feature_weights.score(feats)
 
 
-class CrfNerModel(object):
-    def __init__(self, tag_indexer, feature_indexer, feature_weights):
+class CrfNerModel(ViterbiModel):
+    def __init__(self, tag_indexer, feature_indexer, feature_weights, scorer):
         self.tag_indexer = tag_indexer
         self.feature_indexer = feature_indexer
         self.feature_weights = feature_weights
-
-    def decode(self, sentence_tokens: List[Token]) -> LabeledSentence:
-        """
-        See BadNerModel for an example implementation
-        :param sentence_tokens: List of the tokens in the sentence to tag
-        :return: The LabeledSentence consisting of predictions over the sentence
-        """
-        raise Exception("IMPLEMENT ME")
+        self.scorer = scorer
 
     def decode_beam(self, sentence_tokens: List[Token]) -> LabeledSentence:
         """
@@ -277,13 +275,14 @@ def train_crf_model(sentences: List[LabeledSentence], silent: bool=False) -> Crf
         for counter, i in enumerate(sent_indices):
             if counter % 100 == 0 and not silent:
                 print("Ex %i/%i" % (counter, len(sentences)))
-            scorer = FeatureBasedSequenceScorer(tag_indexer, weight_vector, feature_cache[i])
+            scorer = FeatureBasedSequenceScorer(tag_indexer, weight_vector, feature_cache[i], feature_indexer)
             (gold_log_prob, gradient) = compute_gradient(sentences[i], tag_indexer, scorer, feature_indexer)
             total_obj += gold_log_prob
             weight_vector.apply_gradient_update(gradient, 1)
         if not silent:
             print("Objective for epoch: %.2f in time %.2f" % (total_obj, time.time() - epoch_start))
-    return CrfNerModel(tag_indexer, feature_indexer, weight_vector)
+    dev_scorer = FeatureBasedSequenceScorer(tag_indexer, weight_vector, None, feature_indexer)
+    return CrfNerModel(tag_indexer, feature_indexer, weight_vector, dev_scorer)
 
 
 def extract_emission_features(sentence_tokens: List[Token], word_index: int, tag: str, feature_indexer: Indexer, add_to_indexer: bool):
@@ -356,4 +355,61 @@ def compute_gradient(sentence: LabeledSentence, tag_indexer: Indexer, scorer: Fe
     The second value is a Counter containing the gradient -- this is a sparse map from indices (features)
     to weights (gradient values).
     """
-    raise Exception("IMPLEMENT ME")
+    # forward-backward table
+    alphas = np.zeros((len(sentence.tokens), len(tag_indexer)))
+    for tag_i in range(len(tag_indexer)):
+        alphas[0][tag_i] = scorer.score_emission(sentence.tokens, tag_i, 0)
+
+    for token_i in range(1, len(sentence.tokens)):
+        for tag_i in range(len(tag_indexer)):
+            alphas[token_i][tag_i] = alphas[token_i-1][0] + \
+                scorer.score_transition(sentence.tokens, 0, tag_i) + \
+                scorer.score_emission(sentence.tokens, tag_i, token_i)
+
+            for prev_tag_i in range(1, len(tag_indexer)):
+                score = alphas[token_i-1][prev_tag_i] + \
+                    scorer.score_transition(sentence.tokens, prev_tag_i, tag_i) + \
+                    scorer.score_emission(sentence.tokens, tag_i, token_i)
+                alphas[token_i][tag_i] = np.logaddexp(alphas[token_i][tag_i], score)
+
+    betas = np.zeros((len(sentence.tokens), len(tag_indexer)))
+    # betas are log(1) = 0 in the last column, so no need to initialize
+    # for tag_i in range(len(tag_indexer)):
+    #     betas[0][tag_i] = scorer.score_emission(sentence.tokens, tag_i, 0)
+
+    for token_i in range(-2, -len(sentence.tokens)-1, -1):
+        for tag_i in range(len(tag_indexer)):
+            betas[token_i][tag_i] = betas[token_i+1][0] + \
+                scorer.score_transition(sentence.tokens, 0, tag_i) + \
+                scorer.score_emission(sentence.tokens, tag_i, token_i)
+
+            for prev_tag_i in range(1, len(tag_indexer)):
+                score = betas[token_i+1][prev_tag_i] + \
+                    scorer.score_transition(sentence.tokens, prev_tag_i, tag_i) + \
+                    scorer.score_emission(sentence.tokens, tag_i, token_i)
+                betas[token_i][tag_i] = np.logaddexp(betas[token_i][tag_i], score)
+
+    norm_sum = (alphas[0] + betas[0]).sum()
+    # import ipdb; ipdb.set_trace()
+    # assert(norm_sum == (alphas[-1] + betas[-1]).sum())
+
+    gradient = Counter()
+    gold_log_prob = 0
+
+    for token_i in range(len(sentence.tokens)):
+        for tag_i in range(len(tag_indexer)):
+            log_p_tag_given_token = alphas[token_i][tag_i] + betas[token_i][tag_i] - norm_sum
+            p_tag_given_token = np.exp(log_p_tag_given_token)
+            feats_idxs = scorer.feat_cache[token_i][tag_indexer.index_of(sentence.bio_tags[token_i])]
+            feats_counter = Counter(feats_idxs)
+            for k in feats_counter.keys():
+                feats_counter[k] = feats_counter[k] * p_tag_given_token
+
+            gradient -= feats_counter
+
+            if tag_i == tag_indexer.index_of(sentence.bio_tags[token_i]):
+                # add gold feature f_e to gradient
+                gradient += Counter(feats_idxs)
+                gold_log_prob += log_p_tag_given_token
+
+    return gold_log_prob, gradient
