@@ -222,6 +222,8 @@ class FeatureBasedSequenceScorer(object):
         return self.feature_weights.score(feats)
 
 
+BEAM_SIZE = 2
+
 class CrfNerModel(ViterbiModel):
     def __init__(self, tag_indexer, feature_indexer, feature_weights, scorer):
         self.tag_indexer = tag_indexer
@@ -235,8 +237,41 @@ class CrfNerModel(ViterbiModel):
         :param sentence_tokens: List of the tokens in the sentence to tag
         :return: The LabeledSentence consisting of predictions over the sentence
         """
-        raise Exception("IMPLEMENT ME")
+        init_beam = Beam(BEAM_SIZE)
+        # list of beams, one per token
+        beams = [init_beam]
 
+        # import ipdb; ipdb.set_trace()
+        bio_tags_i = np.zeros(len(sentence_tokens), dtype=np.int64)
+
+        for tag_i in range(len(self.tag_indexer)):
+            score = self.scorer.score_init(sentence_tokens, tag_i) + \
+                self.scorer.score_emission(sentence_tokens, tag_i, 0)
+            init_beam.add((None, tag_i), score)
+
+        for token_i in range(1, len(sentence_tokens)):
+            beam_i = Beam(BEAM_SIZE)
+            beams.append(beam_i)
+
+            for tag_i in range(len(self.tag_indexer)):
+                emmision_score = self.scorer.score_emission(sentence_tokens, tag_i, token_i)
+                for prev_beam_i, prev_tuple in enumerate(beams[token_i-1].get_elts_and_scores()):
+                    ((_, prev_tag_i), prev_score) = prev_tuple
+                    score = prev_score + \
+                        self.scorer.score_transition(sentence_tokens, prev_tag_i, tag_i) + \
+                        emmision_score
+                    beam_i.add((prev_beam_i, tag_i), score)
+
+        (prev_beam_i, bio_tags_i[-1]) = beams[-1].head()
+
+        import ipdb; ipdb.set_trace()
+        for i in range(-2, -len(sentence_tokens), -1):
+            (prev_beam_i, bio_tags_i[i]) = beams[i].elts[prev_beam_i]
+
+        tags = [self.tag_indexer.get_object(i) for i in bio_tags_i]
+        chunks = chunks_from_bio_tag_seq(tags)
+
+        return LabeledSentence(sentence_tokens, chunks)
 
 def train_crf_model(sentences: List[LabeledSentence], silent: bool=False) -> CrfNerModel:
     """
