@@ -9,6 +9,8 @@ from models import *
 from collections import Counter
 from typing import List
 
+import os
+import pickle
 
 def _parse_args():
     """
@@ -101,7 +103,12 @@ if __name__ == '__main__':
         print("Viterbi decoding took %f seconds" % (time.time() - dev_start_time))
         print_evaluation(dev, dev_decoded)
     elif system_to_run == "CRF":
-        crf_model = train_crf_model(train, silent=args.silent)
+        if os.path.exists("classifier.pickle"):
+            print("Loading a PICKLE")
+            crf_model = pickle.load(open("classifier.pickle", "rb"))
+        else:
+            crf_model = train_crf_model(train, silent=args.silent)
+            pickle.dump(crf_model, open("classifier.pickle", "wb"))
         if not args.silent:
             print("Data reading and training took %f seconds" % (time.time() - start_time))
         if args.inference == "BEAM" or args.inference == "BOTH":
