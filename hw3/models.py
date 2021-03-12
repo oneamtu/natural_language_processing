@@ -273,7 +273,7 @@ class CrfNerModel(ViterbiModel):
         (prev_beam_i, bio_tags_i[-1]) = beams[-1].head()
 
         # import ipdb; ipdb.set_trace()
-        for i in range(-2, -len(sentence_tokens), -1):
+        for i in range(-2, -len(sentence_tokens)-1, -1):
             (prev_beam_i, bio_tags_i[i]) = beams[i].elts[prev_beam_i]
 
         tags = [self.tag_indexer.get_object(i) for i in bio_tags_i]
