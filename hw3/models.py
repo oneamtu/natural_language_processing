@@ -288,7 +288,6 @@ def train_crf_model(sentences: List[LabeledSentence], silent: bool=False) -> Crf
     :param silent: True to suppress output, false to print certain debugging outputs
     :return: The CrfNerModel, which is primarily a wrapper around the tag + feature indexers as well as weights
     """
-    sentences = sentences[0:100]
     tag_indexer = Indexer()
     for sentence in sentences:
         for tag in sentence.get_bio_tags():
@@ -448,6 +447,7 @@ def compute_gradient(sentence: LabeledSentence, tag_indexer: Indexer, scorer: Fe
         for tag_i in range(len(tag_indexer)):
             norm_Z = 0
             alpha_beta = alphas[token_i] + betas[token_i]
+            # stable logsumexp
             for exp_ab in alpha_beta:
                 norm_Z = np.logaddexp(norm_Z, exp_ab)
 
@@ -455,15 +455,13 @@ def compute_gradient(sentence: LabeledSentence, tag_indexer: Indexer, scorer: Fe
             p_tag_given_token = np.exp(log_p_tag_given_token)
             # print(p_tag_given_token)
             feats_idxs = scorer.feat_cache[token_i][tag_i]
-            feats_counter = Counter(feats_idxs)
-            for k in feats_counter.keys():
-                feats_counter[k] = feats_counter[k] * p_tag_given_token
-
-            gradient.subtract(feats_counter)
+            for k in feats_idxs:
+                gradient[k] = gradient[k] - p_tag_given_token
 
             if tag_i == tag_indexer.index_of(sentence.bio_tags[token_i]):
                 # add gold feature f_e to gradient
-                gradient.update(Counter(feats_idxs))
+                for k in feats_idxs:
+                    gradient[k] = gradient[k] + 1.0
                 gold_log_prob += log_p_tag_given_token
 
     # import ipdb; ipdb.set_trace()
