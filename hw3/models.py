@@ -74,7 +74,6 @@ class ViterbiModel(object):
 
                 V[token_i][tag_i] = best_score + self.scorer.score_emission(sentence_tokens, tag_i, token_i)
                 B[token_i][tag_i] = best_prev_tag_i
-            # import ipdb; ipdb.set_trace()
 
         bio_tags_i[-1] = np.argmax(V[-1])
 
@@ -84,6 +83,7 @@ class ViterbiModel(object):
         tags = [self.tag_indexer.get_object(i) for i in bio_tags_i]
         chunks = chunks_from_bio_tag_seq(tags)
 
+        # import ipdb; ipdb.set_trace()
         return LabeledSentence(sentence_tokens, chunks)
 
 
@@ -245,6 +245,7 @@ def train_crf_model(sentences: List[LabeledSentence], silent: bool=False) -> Crf
     :param silent: True to suppress output, false to print certain debugging outputs
     :return: The CrfNerModel, which is primarily a wrapper around the tag + feature indexers as well as weights
     """
+    sentences = sentences[0:100]
     tag_indexer = Indexer()
     for sentence in sentences:
         for tag in sentence.get_bio_tags():
@@ -278,7 +279,11 @@ def train_crf_model(sentences: List[LabeledSentence], silent: bool=False) -> Crf
             scorer = FeatureBasedSequenceScorer(tag_indexer, weight_vector, feature_cache[i], feature_indexer)
             (gold_log_prob, gradient) = compute_gradient(sentences[i], tag_indexer, scorer, feature_indexer)
             total_obj += gold_log_prob
+            m = CrfNerModel(tag_indexer, feature_indexer, None, scorer)
+            # print(sentences[i].bio_tags)
+            # print(m.decode(sentences[i].tokens).bio_tags)
             weight_vector.apply_gradient_update(gradient, 1)
+            # print(m.decode(sentences[i].tokens).bio_tags)
         if not silent:
             print("Objective for epoch: %.2f in time %.2f" % (total_obj, time.time() - epoch_start))
     dev_scorer = FeatureBasedSequenceScorer(tag_indexer, weight_vector, None, feature_indexer)
@@ -389,27 +394,35 @@ def compute_gradient(sentence: LabeledSentence, tag_indexer: Indexer, scorer: Fe
                     scorer.score_emission(sentence.tokens, tag_i, token_i)
                 betas[token_i][tag_i] = np.logaddexp(betas[token_i][tag_i], score)
 
-    norm_sum = (alphas[0] + betas[0]).sum()
     # import ipdb; ipdb.set_trace()
-    # assert(norm_sum == (alphas[-1] + betas[-1]).sum())
+    # assert(norm_sum.round(-1) == (alphas[-1] + betas[-1]).sum().round(-1))
 
     gradient = Counter()
     gold_log_prob = 0
 
+    # import ipdb; ipdb.set_trace()
     for token_i in range(len(sentence.tokens)):
         for tag_i in range(len(tag_indexer)):
-            log_p_tag_given_token = alphas[token_i][tag_i] + betas[token_i][tag_i] - norm_sum
+            norm_Z = 0
+            alpha_beta = alphas[token_i] + betas[token_i]
+            for exp_ab in alpha_beta:
+                norm_Z = np.logaddexp(norm_Z, exp_ab)
+
+            log_p_tag_given_token = alphas[token_i][tag_i] + betas[token_i][tag_i] - norm_Z
             p_tag_given_token = np.exp(log_p_tag_given_token)
-            feats_idxs = scorer.feat_cache[token_i][tag_indexer.index_of(sentence.bio_tags[token_i])]
+            # print(p_tag_given_token)
+            feats_idxs = scorer.feat_cache[token_i][tag_i]
             feats_counter = Counter(feats_idxs)
             for k in feats_counter.keys():
                 feats_counter[k] = feats_counter[k] * p_tag_given_token
 
-            gradient -= feats_counter
+            gradient.subtract(feats_counter)
 
             if tag_i == tag_indexer.index_of(sentence.bio_tags[token_i]):
                 # add gold feature f_e to gradient
-                gradient += Counter(feats_idxs)
+                gradient.update(Counter(feats_idxs))
                 gold_log_prob += log_p_tag_given_token
 
+    # import ipdb; ipdb.set_trace()
+    # print(gold_log_prob)
     return gold_log_prob, gradient
