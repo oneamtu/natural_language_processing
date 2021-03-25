@@ -9,6 +9,7 @@ import torch.nn as nn
 from torch import optim
 
 import pickle
+import sys
 from typing import List
 
 #####################
@@ -49,8 +50,8 @@ def train_frequency_based_classifier(cons_exs, vowel_exs):
         vowel_counts[ex[-1]] += 1
     return FrequencyBasedClassifier(consonant_counts, vowel_counts)
 
-EMBEDDING_SIZE=6
-HIDDEN_SIZE=6
+EMBEDDING_SIZE=8
+HIDDEN_SIZE=8
 OUTPUT_SIZE=2
 
 class RNNClassifier(ConsonantVowelClassifier):
@@ -163,10 +164,10 @@ class LMClassifierRNN(nn.Module):
         :return: an [out]-sized tensor of log probabilities. (In general your network can be set up to return either log
         probabilities or a tuple of (loss, log probability) if you want to pass in y to this function as well
         """
+        # import ipdb; ipdb.set_trace()
         # print(x.size())
         embedded = self.embedding(x)
         # print(embedded.size())
-        # from IPython import embed; embed()
         lstm_output, (hidden_state, cell_state) = self.lstm(embedded)
         # print(hidden_state.size())
 
@@ -175,8 +176,8 @@ class LMClassifierRNN(nn.Module):
         # print(output.size())
         return nn.LogSoftmax(dim=1)(output)
 
-NUM_EPOCHS=200
-BATCH_SIZE=1
+NUM_EPOCHS=18
+BATCH_SIZE=10
 
 def train_rnn_classifier(args, train_cons_exs, train_vowel_exs, dev_cons_exs, dev_vowel_exs, vocab_index):
     """
@@ -190,15 +191,15 @@ def train_rnn_classifier(args, train_cons_exs, train_vowel_exs, dev_cons_exs, de
     """
     classifier = RNNClassifier(vocab_index)
 
-    train_cons_exs = train_cons_exs[0:10]
-    dev_cons_exs = train_cons_exs[0:10]
-    train_vowel_exs = train_vowel_exs[0:10]
-    dev_vowel_exs = train_vowel_exs[0:10]
+    # train_cons_exs = train_cons_exs[0:100]
+    # dev_cons_exs = train_cons_exs[0:100]
+    # train_vowel_exs = train_vowel_exs[0:100]
+    # dev_vowel_exs = train_vowel_exs[0:100]
 
     for epoch in range(0, 200):
         classifier.rnn.train()
 
-        ex_indices = [i for i in range(0, len(train_vowel_exs))]
+        ex_indices = [i for i in range(0, len(train_vowel_exs) + len(train_cons_exs))]
         random.shuffle(ex_indices)
         total_loss = 0.0
         for range_start in np.arange(0, len(ex_indices), BATCH_SIZE):
@@ -206,25 +207,22 @@ def train_rnn_classifier(args, train_cons_exs, train_vowel_exs, dev_cons_exs, de
             if range_end == range_start:
                 continue
 
-            sliced_train_exs = [train_vowel_exs[i] for i in ex_indices[range_start:range_end]]
-            # vowel gold - 1
-            labels = [1 for ex in sliced_train_exs]
+            sliced_train_exs = []
+            labels = []
+
+            for i in ex_indices[range_start:range_end]:
+                if i < len(train_vowel_exs):
+                    sliced_train_exs.append(train_vowel_exs[i])
+                    # vowel gold - 1
+                    labels.append(1)
+                else:
+                    sliced_train_exs.append(train_cons_exs[i % len(train_vowel_exs)])
+                    # cons gold - 0
+                    labels.append(0)
+
             loss = classifier.train(sliced_train_exs, labels)
             total_loss += loss
 
-        ex_indices = [i for i in range(0, len(train_cons_exs))]
-        random.shuffle(ex_indices)
-        total_loss = 0.0
-        for range_start in np.arange(0, len(ex_indices), BATCH_SIZE):
-            range_end = min(range_start + BATCH_SIZE, len(ex_indices) - 1)
-            if range_end == range_start:
-                continue
-
-            sliced_train_exs = [train_cons_exs[i] for i in ex_indices[range_start:range_end]]
-            # cons gold - 0
-            labels = [0 for ex in sliced_train_exs]
-            loss = classifier.train(sliced_train_exs, labels)
-            total_loss += loss
         print("Total loss on epoch %i: %f" % (epoch, total_loss))
 
         classifier.rnn.eval()
@@ -235,15 +233,17 @@ def train_rnn_classifier(args, train_cons_exs, train_vowel_exs, dev_cons_exs, de
             num_correct = 0
             num_total = 0
 
+            # import ipdb; ipdb.set_trace()
+
             predictions = classifier.predict_all(dev_vowel_exs)
             for idx in range(0, len(dev_vowel_exs)):
-                if [0, 1] == predictions[idx]:
+                if 1 == predictions[idx]:
                     num_correct += 1
                 num_total += 1
 
             predictions = classifier.predict_all(dev_cons_exs)
             for idx in range(0, len(dev_cons_exs)):
-                if [0, 1] == predictions[idx]:
+                if 0 == predictions[idx]:
                     num_correct += 1
                 num_total += 1
 
@@ -255,15 +255,15 @@ def train_rnn_classifier(args, train_cons_exs, train_vowel_exs, dev_cons_exs, de
     return classifier
 
 
-# Example of training a feedforward network with one hidden layer to solve XOR.
 if __name__=="__main__":
     classifier = pickle.load(open("classifier.pickle", "rb"))
-    sentence = sys.argv[1:]
+    sentence = ' '.join(sys.argv[1:])
     prediction = classifier.predict(sentence)
     print(f"Prediction is: {prediction}")
 
-    log_probs = classifier.ffnn.forward(classifier.preprocess_input([sentence]))
+    log_probs = classifier.rnn.forward(classifier.preprocess_input([sentence]))
     # from IPython import embed; embed()
+    # import ipdb; ipdb.set_trace()
     assert(torch.exp(log_probs).sum() == 1.)
     print(f"Probs are: {torch.exp(log_probs)}")
 
