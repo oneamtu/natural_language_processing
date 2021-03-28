@@ -325,10 +325,7 @@ class RNNLanguageModel(LanguageModel):
         return torch.stack(indexed_contexts)
 
     def get_next_char_log_probs(self, context):
-        _, hidden_state, _ = self.rnn.forward(self.preprocess_input([" " + context]))
-        # discard batch dim == size 1 (similar to unsqueeze)
-        output = self.rnn.hidden_to_out(hidden_state.view(-1, LM_HIDDEN_SIZE))
-        log_probs = nn.LogSoftmax(dim=1)(output)
+        log_probs, _ = self.rnn.forward(self.preprocess_input([" " + context]))
         return log_probs.view(len(self.vocab_indexer)).detach().numpy()
 
     def get_log_prob_sequence(self, next_chars, context):
@@ -336,24 +333,24 @@ class RNNLanguageModel(LanguageModel):
         # character, which we discard, since we only care about
         # probs on the next_chars; we'll just use the states in
         # the next pass
-        _, hidden_state, cell_state = self.rnn.forward(
+        _, (_, hidden_state, cell_state) = self.rnn.forward(
                 self.preprocess_input([" " + context[0:-1]]))
         # the last char of the context provides the probs for the first
         # character in next_chars, so add it in; drop the last char
         # since we don't need to 'predict' what comes after it
-        seq_hidden, _, _ = self.rnn.forward(
+        _, (seq_hidden, _, _) = self.rnn.forward(
                 self.preprocess_input([context[-1] + next_chars[0:-1]]),
                 prev_hidden_state=hidden_state,
                 prev_cell_state=cell_state)
 
         # import ipdb; ipdb.set_trace()
-        # discard batch dim == size 1
+        # discard batch_size dim = 1
         seq_output = self.rnn.hidden_to_out(seq_hidden).view(len(next_chars), len(self.vocab_indexer))
         seq_log_probs = nn.LogSoftmax(dim=1)(seq_output)
         # print(seq_log_probs.size())
         return sum([seq_log_probs[i, self.vocab_indexer.index_of(c)].detach().numpy() for i, c in enumerate(next_chars)])
 
-    def train(self, contexts: List[str], labels: List[List[int]],
+    def train(self, contexts: List[str], labels: List[int],
             prev_hidden_state: torch.tensor, prev_cell_state: torch.tensor) -> float:
         """
         NN train step
@@ -364,22 +361,16 @@ class RNNLanguageModel(LanguageModel):
         x = self.preprocess_input(contexts)
         # Zero out the gradients from the torch.from_numpy(np.array(labels, dtype=np.int64))FFNN object. *THIS IS VERY IMPORTANT TO DO BEFORE CALLING BACKWARD()*
         self.rnn.zero_grad()
-        seq_hidden, hidden_state, cell_state = self.rnn.forward(x, prev_hidden_state, prev_cell_state)
-        seq_output = self.rnn.hidden_to_out(seq_hidden)
-        seq_log_probs = nn.LogSoftmax(dim=1)(seq_output)
-
+        log_probs, (_, hidden_state, cell_state) = self.rnn.forward(x, prev_hidden_state, prev_cell_state)
         # import ipdb; ipdb.set_trace()
-        total_loss = 0
-        for i in range(len(seq_log_probs)):
-            total_loss += nn.NLLLoss()(seq_log_probs[i], torch.tensor(labels[i]))
-
+        loss = nn.NLLLoss()(log_probs, torch.tensor(labels))
         # Computes the gradient and takes the optimizer step
-        total_loss.backward()
+        loss.backward()
         self.optimizer.step()
 
         # detach from computation graph, only values are needed
         # in the next graph
-        return total_loss, (hidden_state.detach(), cell_state.detach())
+        return loss, (hidden_state.detach(), cell_state.detach())
 
 class LMRNN(nn.Module):
     """
@@ -445,13 +436,17 @@ class LMRNN(nn.Module):
         # print(x.size())
         embedded = self.embedding(x)
         # print(embedded.size())
-        sequence_hidden_state, (hidden_state, cell_state) = self.lstm(embedded, (prev_hidden_state, prev_cell_state))
+        lstm_output, (hidden_state, cell_state) = self.lstm(embedded, (prev_hidden_state, prev_cell_state))
         # print(hidden_state.size())
 
-        return sequence_hidden_state, hidden_state, cell_state
+        # hidden_state has length 1 instead of seq length, so drop it
+        # import ipdb; ipdb.set_trace()
+        output = self.hidden_to_out(hidden_state.view(x.size()[0], self.output_size))
+        # print(output.size())
+        return nn.LogSoftmax(dim=1)(output), (lstm_output, hidden_state, cell_state)
 
 LM_NUM_EPOCHS=2
-LM_CHUNK_SIZE=10
+LM_CHUNK_SIZE=6
 # how much overlap we leave between chunks in a batch
 LM_SKIP_SIZE=2
 LM_BATCH_SIZE=LM_CHUNK_SIZE // LM_SKIP_SIZE
@@ -486,14 +481,10 @@ def train_lm(args, train_text, dev_text, vocab_index):
                 range_end = min(range_start + LM_CHUNK_SIZE, len(train_text) - 2)
 
                 contexts.append(train_text[range_start:range_end])
-                context_labels = [vocab_index.index_of(train_text[i+1]) for i in range(range_start, range_end)]
-                labels.append(context_labels)
+                labels.append(vocab_index.index_of(train_text[range_end]))
 
             index = (i % LM_CHUNK_SIZE)/LM_SKIP_SIZE
             loss, (prev_hidden_state, prev_cell_state) = lm.train(contexts, labels, prev_hidden_state, prev_cell_state)
-            # TODO: should or should not reset state
-            prev_hidden_state = None
-            prev_cell_state = None
             total_loss += loss
 
         print("Total loss on epoch %i: %f" % (epoch, total_loss))
