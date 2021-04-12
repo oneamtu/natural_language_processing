@@ -13,6 +13,9 @@ import pickle
 import numpy as np
 from typing import List
 
+# catch NaNs
+torch.autograd.set_detect_anomaly(True)
+
 def add_models_args(parser):
     """
     Command-line arguments to the system related to your model.  Feel free to extend here.  
@@ -21,7 +24,7 @@ def add_models_args(parser):
     parser.add_argument('--seed', type=int, default=0, help='RNG seed (default = 0)')
     parser.add_argument('--epochs', type=int, default=15, help='num epochs to train for')
     parser.add_argument('--lr', type=float, default=1e-3)
-    parser.add_argument('--batch_size', type=int, default=3, help='batch size')
+    parser.add_argument('--batch_size', type=int, default=10, help='batch size')
 
     # 65 is all you need for GeoQuery
     parser.add_argument('--decoder_len_limit', type=int, default=65, help='output length limit of the decoder')
@@ -86,13 +89,15 @@ class Seq2SeqSemanticParser(nn.Module):
         self.output_emb = EmbeddingLayer(emb_dim, len(output_indexer), embedding_dropout)
         self.decoder = nn.LSTMCell(emb_dim, hidden_size)
 
+        self.attention_layer = AttentionLayer(hidden_size)
+
         self.output_size = len(output_indexer)
         self.hidden_to_out = nn.Linear(hidden_size, self.output_size)
 
         self.softmax = nn.LogSoftmax(dim=1)
         self.nll_loss = nn.NLLLoss()
 
-    def forward(self, x_tensor, inp_lens_tensor, y_tensor, out_lens_tensor):
+    def forward(self, x_tensor, inp_lens_tensor, y_tensor, out_lens_tensor, teacher_forcing_rate=1.0):
         """
         :param x_tensor/y_tensor: either a non-batched input/output [sent len] vector of indices or a batched input/output
         [batch size x sent len]. y_tensor contains the gold sequence(s) used for training
@@ -101,27 +106,42 @@ class Seq2SeqSemanticParser(nn.Module):
         :return: loss of the batch
         """
         (enc_output_each_word, enc_context_mask, h_t) = self.encode_input(x_tensor, inp_lens_tensor)
+        # initialize decoder state from encoder state
+        attention_h_t, c_t = h_t
 
         total_loss = 0
 
+        # init start symbol for batch
         decoder_input = torch.ones((y_tensor.size(0)), dtype=torch.long) * self.output_indexer.index_of(SOS_SYMBOL)
         decoder_input_emb = self.output_emb.forward(decoder_input)
 
         torch.transpose(y_tensor, 0, 1)
+        teacher_forcing = random.random() < teacher_forcing_rate
 
-        # init start symbol for batch
-        # import ipdb; ipdb.set_trace()
-        # TODO: non-teacher forcing?
         for word_i in range(out_lens_tensor.max()):
-            h_t = self.decoder(decoder_input_emb, h_t)
-            output = self.hidden_to_out(h_t[0])
+            h_t, c_t = self.decoder(decoder_input_emb, (attention_h_t, c_t))
+
+            # if any([torch.isnan(x) for x in h_t.view(-1)]):
+            #     import ipdb; ipdb.set_trace()
+
+            attention_h_t = self.attention_layer(enc_output_each_word, h_t, enc_context_mask)
+            # if any([torch.isnan(x) for x in attention_h_t.view(-1)]):
+            #     import ipdb; ipdb.set_trace()
+
+            output = self.hidden_to_out(attention_h_t)
             log_probs = self.softmax(output)
 
             loss = self.nll_loss(log_probs, y_tensor[:, word_i])
             # TODO: ignore loss for 'out of length' seqs?
+            # see ignore_index option
+            # or use context_mask
             total_loss += loss
 
-            decoder_input = y_tensor[:, word_i]
+            if teacher_forcing:
+                decoder_input = y_tensor[:, word_i]
+            else:
+                decoder_input = torch.argmax(log_probs, dim=1)
+
             decoder_input_emb = self.output_emb.forward(decoder_input)
 
         return total_loss
@@ -136,6 +156,7 @@ class Seq2SeqSemanticParser(nn.Module):
             x_tensor = torch.tensor(ex.x_indexed).view(1, -1)
 
             (enc_output_each_word, enc_context_mask, h_t) = self.encode_input(x_tensor, torch.tensor([len(ex.x_indexed)]))
+            attention_h_t, c_t = h_t
 
             decoder_input = torch.ones((1), dtype=torch.long) * self.output_indexer.index_of(SOS_SYMBOL)
             decoder_input_emb = self.output_emb.forward(decoder_input)
@@ -146,8 +167,9 @@ class Seq2SeqSemanticParser(nn.Module):
             # import ipdb; ipdb.set_trace()
             while word_index != self.output_indexer.index_of(EOS_SYMBOL) and \
                 len(derivation) <= 100:
-                h_t = self.decoder(decoder_input_emb, h_t)
-                output = self.hidden_to_out(h_t[0])
+                h_t, c_t = self.decoder(decoder_input_emb, (attention_h_t, c_t))
+                attention_h_t = self.attention_layer(enc_output_each_word, h_t, enc_context_mask)
+                output = self.hidden_to_out(attention_h_t)
                 log_probs = self.softmax(output)
 
                 # import ipdb; ipdb.set_trace()
@@ -275,11 +297,79 @@ class RNNEncoder(nn.Module):
             # as the hidden size in the encoder
             new_h = self.reduce_h_W(h_)
             new_c = self.reduce_c_W(c_)
+            new_output = self.reduce_h_W(output)
             h_t = (new_h, new_c)
         else:
             h, c = hn[0][0], hn[1][0]
             h_t = (h, c)
-        return (output, context_mask, h_t)
+        return (new_output, context_mask, h_t)
+
+class AttentionLayer(nn.Module):
+    """
+    Attention Layer
+    Computes the context state based on the encoder hidden states
+    and the current hidden state
+    """
+    def __init__(self, hidden_size: int):
+        """
+        :param hidden_size: dimensionality of the hidden state
+        """
+        super(AttentionLayer, self).__init__()
+        self.hidden_size = hidden_size
+        self.attention_scorer = AttentionScorer(hidden_size, 'dot')
+        self.reduce_attention_context_W = nn.Linear(hidden_size * 2, hidden_size, bias=True)
+
+    def forward(self, encoder_hidden_states, h_t, encoder_context_mask):
+        """
+        :param encoder_hidden_states: hidden states computed by the encoder
+        :param h_t: current hidden state
+        :return: embedded form of the input words (last coordinate replaced by input_dim)
+        """
+        encoder_h_t_scores = self.attention_scorer.forward(encoder_hidden_states, h_t)
+        # import ipdb; ipdb.set_trace()
+        log_mask = torch.log(encoder_context_mask.float()).transpose(0, 1)
+        encoder_h_t_scores += log_mask
+        # use logsumexp to prevent inf (ratio is more stable this way)
+        log_sum_exp_encoder_h_t_scores = torch.logsumexp(encoder_h_t_scores, dim=0)
+        a_t = torch.exp(encoder_h_t_scores - log_sum_exp_encoder_h_t_scores)
+
+        # einstein notation to do the weighted sum of decoder states
+        # and preserve each batch
+        c_t = torch.einsum('sb,sbi->bi', a_t, encoder_hidden_states)
+
+        return torch.tanh(self.reduce_attention_context_W(torch.cat((c_t, h_t), dim=1)))
+
+class AttentionScorer(nn.Module):
+    """
+    Attention score between an input hidden_state and the current
+    target state; used for computing attention weights
+    """
+    def __init__(self, hidden_size: int, scorer_strategy: str):
+        """
+        :param hidden_size: dimensionality of the hidden state
+        :param scorer_strategy: strategies for determining attention score
+        Outlined in Luong NMT '15 paper - ('dot', 'general', 'concat')
+        """
+        super(AttentionScorer, self).__init__()
+        self.hidden_size = hidden_size
+        self.scorer_strategy = scorer_strategy
+        # TODO - scorer_strategy - weights
+
+    def forward(self, h_s, h_t):
+        """
+        :param input: either a non-batched input [sent len x voc size] or a batched input
+        [batch size x sent len x voc size]
+        :return: embedded form of the input words (last coordinate replaced by input_dim)
+        """
+        if self.scorer_strategy == 'dot':
+            # torch doesn't have great support for batched dot product
+            # so we compute the full product, and take the diagonal
+            # to get the right batched dots h_s[0][0] * h_t[0], etc.
+            full_dot = torch.tensordot(h_s, h_t, dims=([2], [1]))
+            return torch.diagonal(full_dot, dim1=1, dim2=2)
+        else:
+            raise Exception(f"Strategy {self.scorer_strategy} no supported!")
+
 ###################################################################################################################
 # End optional classes
 ###################################################################################################################
@@ -317,6 +407,9 @@ def make_padded_output_tensor(exs, output_indexer, max_len):
     return np.array([[ex.y_indexed[i] if i < len(ex.y_indexed) else output_indexer.index_of(PAD_SYMBOL) for i in range(0, max_len)] for ex in exs])
 
 
+TEACHER_FORCING_BASE=.90
+TEACHER_FORCING_EPOCHS=4
+
 def train_model_encdec(train_data: List[Example], dev_data: List[Example], input_indexer, output_indexer, args) -> Seq2SeqSemanticParser:
     """
     Function to train the encoder-decoder model on the given data.
@@ -346,6 +439,7 @@ def train_model_encdec(train_data: List[Example], dev_data: List[Example], input
     seq2seq_parser = Seq2SeqSemanticParser(
             input_indexer, output_indexer,
             args.embedding_size, args.hidden_size)
+
     optimizer = optim.Adam(seq2seq_parser.parameters(), lr=args.lr)
 
     for epoch in range(args.epochs):
@@ -373,7 +467,8 @@ def train_model_encdec(train_data: List[Example], dev_data: List[Example], input
 
             loss = seq2seq_parser.forward(
                     x_tensor, x_input_lengths_tensor,
-                    y_tensor, y_input_lengths_tensor)
+                    y_tensor, y_input_lengths_tensor,
+                    teacher_forcing_rate=TEACHER_FORCING_BASE ** max(epoch-TEACHER_FORCING_EPOCHS, 0))
             loss.backward()
             optimizer.step()
 
