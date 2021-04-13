@@ -124,7 +124,7 @@ class Seq2SeqSemanticParser(nn.Module):
             # if any([torch.isnan(x) for x in h_t.view(-1)]):
             #     import ipdb; ipdb.set_trace()
 
-            attention_h_t = self.attention_layer(enc_output_each_word, h_t, enc_context_mask, inp_lens_tensor)
+            attention_h_t = self.attention_layer(enc_output_each_word, h_t, enc_context_mask)
             # if any([torch.isnan(x) for x in attention_h_t.view(-1)]):
             #     import ipdb; ipdb.set_trace()
 
