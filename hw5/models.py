@@ -22,7 +22,7 @@ def add_models_args(parser):
     """
     # Some common arguments for your convenience
     parser.add_argument('--seed', type=int, default=0, help='RNG seed (default = 0)')
-    parser.add_argument('--epochs', type=int, default=15, help='num epochs to train for')
+    parser.add_argument('--epochs', type=int, default=20, help='num epochs to train for')
     parser.add_argument('--lr', type=float, default=1e-3)
     parser.add_argument('--batch_size', type=int, default=10, help='batch size')
 
@@ -124,7 +124,7 @@ class Seq2SeqSemanticParser(nn.Module):
             # if any([torch.isnan(x) for x in h_t.view(-1)]):
             #     import ipdb; ipdb.set_trace()
 
-            attention_h_t = self.attention_layer(enc_output_each_word, h_t, enc_context_mask)
+            attention_h_t = self.attention_layer(enc_output_each_word, h_t, enc_context_mask, inp_lens_tensor)
             # if any([torch.isnan(x) for x in attention_h_t.view(-1)]):
             #     import ipdb; ipdb.set_trace()
 
@@ -316,7 +316,7 @@ class AttentionLayer(nn.Module):
         """
         super(AttentionLayer, self).__init__()
         self.hidden_size = hidden_size
-        self.attention_scorer = AttentionScorer(hidden_size, 'dot')
+        self.attention_scorer = AttentionScorer(hidden_size, 'general')
         self.reduce_attention_context_W = nn.Linear(hidden_size * 2, hidden_size, bias=True)
 
     def forward(self, encoder_hidden_states, h_t, encoder_context_mask):
@@ -353,7 +353,8 @@ class AttentionScorer(nn.Module):
         super(AttentionScorer, self).__init__()
         self.hidden_size = hidden_size
         self.scorer_strategy = scorer_strategy
-        # TODO - scorer_strategy - weights
+        if scorer_strategy == 'general':
+            self.W_a = nn.Linear(hidden_size, hidden_size, bias=True)
 
     def forward(self, h_s, h_t):
         """
@@ -366,6 +367,12 @@ class AttentionScorer(nn.Module):
             # so we compute the full product, and take the diagonal
             # to get the right batched dots h_s[0][0] * h_t[0], etc.
             full_dot = torch.tensordot(h_s, h_t, dims=([2], [1]))
+            return torch.diagonal(full_dot, dim1=1, dim2=2)
+        elif self.scorer_strategy == 'general':
+            # torch doesn't have great support for batched dot product
+            # so we compute the full product, and take the diagonal
+            # to get the right batched dots h_s[0][0] * h_t[0], etc.
+            full_dot = torch.tensordot(self.W_a(h_s), h_t, dims=([2], [1]))
             return torch.diagonal(full_dot, dim1=1, dim2=2)
         else:
             raise Exception(f"Strategy {self.scorer_strategy} no supported!")
@@ -407,7 +414,7 @@ def make_padded_output_tensor(exs, output_indexer, max_len):
     return np.array([[ex.y_indexed[i] if i < len(ex.y_indexed) else output_indexer.index_of(PAD_SYMBOL) for i in range(0, max_len)] for ex in exs])
 
 
-TEACHER_FORCING_BASE=.90
+TEACHER_FORCING_BASE=1.0
 TEACHER_FORCING_EPOCHS=4
 
 def train_model_encdec(train_data: List[Example], dev_data: List[Example], input_indexer, output_indexer, args) -> Seq2SeqSemanticParser:
@@ -436,6 +443,10 @@ def train_model_encdec(train_data: List[Example], dev_data: List[Example], input
         print("Train output length: %i" % np.max(np.asarray([len(ex.y_indexed) for ex in train_data])))
         print("Train matrix: %s; shape = %s" % (all_train_input_data, all_train_input_data.shape))
 
+    # if os.path.exists("parser_2.pickle"):
+    #     print("Loading a PICKLE")
+    #     seq2seq_parser = pickle.load(open("parser_2.pickle", "rb"))
+    # else:
     seq2seq_parser = Seq2SeqSemanticParser(
             input_indexer, output_indexer,
             args.embedding_size, args.hidden_size)
