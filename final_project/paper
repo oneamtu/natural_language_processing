@@ -1,0 +1,34 @@
+ * The traditional transformer quote by V. - is a good omen - not detailing the architecture of transformers, since they're (not) well understood.
+ * Problems with understanding, representation; limitative results in developing knowledge, rather than just training a counting horse.
+ * Trusting systems; trusting internet knowledge.
+
+ * resilient to gibberish
+  1. add NER, entailment for robustness
+  2. use BART squad
+  2. does BART know 'NER'?
+  2. can we use BART to 'validate' answers? or likelihood of answer
+  2. add gibberish (learn to add adversarial attacks?)
+  3. use pre-trained embeddings; pre-trained model?
+
+Refs:
+Evaluating Factuality in Generation with Dependency-level Entailment - Tanya GoyalandGreg Durrett
+
+
+SQuad predictions:
+{'EM': 48.74, 'F1': 61.43}
+
+
+compute EM/F1 with: 'python3 evaluate.py --dataset_path datasets/squad_adversarial_addonesent.jsonl.gz --output_path squad_adversarial_addonesent_dr_qa_predictions.txt'
+
+{'EM': 38.39, 'F1': 48.34}
+
+
+predictions written to 'newsqa_dev_dr_qa_predictions.txt'
+compute EM/F1 with: 'python3 evaluate.py --dataset_path datasets/newsqa_dev.jsonl.gz --output_path newsqa_dev_dr_qa_predictions.txt'
+
+{'EM': 19.66, 'F1': 31.0}
+
+predictions written to 'bioasq_dr_qa_predictions.txt'
+compute EM/F1 with: 'python3 evaluate.py --dataset_path datasets/bioasq.jsonl.gz --output_path bioasq_dr_qa_predictions.txt'
+
+{'EM': 11.44, 'F1': 19.41}
